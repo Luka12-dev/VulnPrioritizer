@@ -1,5 +1,8 @@
 import sys
 import os
+import re
+import math
+import json
 import traceback
 from datetime import datetime
 
@@ -7,429 +10,323 @@ import numpy as np
 import pandas as pd
 from PyQt6.QtGui import QIcon
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.preprocessing import StandardScaler
 import joblib
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QFileDialog, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QGroupBox, QFormLayout, QMessageBox, QLineEdit,
-    QProgressBar, QTextEdit
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QProgressBar, QTextEdit, QFileDialog, QMessageBox,
+    QCheckBox, QGroupBox, QSlider
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 # QSS
 QSS = r"""
-QMainWindow { background: #081025; color: #e6eef8; }
+QMainWindow { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #071029, stop:1 #071a2f); color: #e6eef8; }
 QLabel { color: #e6eef8; }
-QPushButton { background: #0f1724; color: #e6eef8; padding: 8px 12px; border-radius:8px; }
+QLineEdit { background: #071828; color: #e6eef8; padding:8px; border-radius:6px; }
+QPushButton { background: #0f1724; color: #e6eef8; padding:8px 12px; border-radius:6px; }
 QPushButton:hover { background: #111827; }
-QTableWidget { background: #071029; color: #e6eef8; gridline-color: #102030; }
-QHeaderView::section { background: #0b1624; color: #e6eef8; padding: 6px; }
-QProgressBar { background: #0b1220; color: #e6eef8; border-radius: 6px; }
-QGroupBox { border: 1px solid #102030; margin-top: 6px; padding: 6px; }
-QLineEdit, QSpinBox, QDoubleSpinBox { background: #071029; color: #e6eef8; }
+QProgressBar { background: #03101a; color: #e6eef8; border-radius:8px; height:18px; }
+QGroupBox { border: 1px solid #082233; margin-top: 6px; padding: 8px; }
 """
 
-# Worker Threads
-class TrainerThread(QThread):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(object)
-    error = pyqtSignal(str)
+# Feature extraction
 
-    def __init__(self, X, y):
-        super().__init__()
-        self.X = X
-        self.y = y
+COMMON_PASSWORDS = set([
+        'password','123456','qwerty','letmein','admin','welcome','iloveyou','000000',
+        '123456789','12345678','12345','123123','111111','1234','abc123','1234567','dragon',
+        'monkey','football','baseball','shadow','master','superman','696969','jordan','harley',
+        'computer','hunter','buster','soccer','batman','thomas','jessica','michael','charlie',
+        'pepper','secret','andrew','tigger','sunshine','iloveu','princess','flower','hottie',
+        'loveme','zaq12wsx','starwars','hello','freedom','whatever','qazwsx','trustno1',
+        'password1','qwerty123','letmein1','welcome1','123qwe','654321','donald','pokemon',
+        'naruto','superstar','killer','mustang','jordan23','summer','love','angel','cheese',
+        'daniel','family','william','george','maggie','cookie','ginger','amanda','justin',
+        'music','happy','peppermint','blink182','matrix','carlos','samsung','google','ninja',
+        '123abc','asdfgh','zxcvbn','qwertyuiop','1q2w3e4r','q1w2e3r4','admin123','welcome123',
+        'iloveyou2','princess1','love123','football1','baseball1','soccer1','basketball',
+        'hockey','tennis','guitar','bandit','ranger','cowboy','indigo','orange','yellow',
+        'purple','green','blue','black','white','red','silver','gold','diamond','crystal',
+        'mercedes','corvette','porsche','ferrari','honda','toyota','chevy','ford','bmw',
+        'windows','mypass','pass123','passw0rd','pa55word','letmein123','123456a','abc12345',
+        '1qaz2wsx','qwerty1','asdf1234','ilovegod','jesus','god123','heaven','faith','church',
+        'america','canada','mexico','brazil','england','france','germany','italy','spain',
+        'japan','china','india','serbia','russia','ukraine','poland','turkey','sweden',
+        'denmark','norway','finland','ireland','scotland','wales','australia','newzealand',
+        'thailand','vietnam','philippines','indonesia','malaysia','singapore','korea','egypt',
+        'africa','nigeria','kenya','southafrica','morocco','algeria','tunisia','worldcup',
+        'arsenal','chelsea','liverpool','manutd','realmadrid','barcelona','juventus','milan',
+        'bayern','psg','olympics','champion','winner','loser','gameover','playstation',
+        'nintendo','xbox','minecraft','fortnite','roblox','amongus','steam','counterstrike',
+        'halflife','portal','doom','quake','diablo','warcraft','starcraft','overwatch',
+        'apple','banana','orange1','lemon','grape','mango','kiwi','watermelon','strawberry',
+        'chocolate','candy','icecream','coffee','pizza','burger','taco','sushi','ramen',
+        'donut','cookie1','cake123','cupcake','beer','vodka','whiskey','tequila','rum',
+        'marijuana','cocaine','heroin','weed420','stoner','drugs','smoking','alcohol','party',
+        'dance','music123','rapstar','eminem','drdre','snoopdogg','2pac','biggie','metallica',
+        'nirvana','queen','beatles','elvis','madonna','beyonce','rihanna','shakira','ladygaga',
+        'taylor','selena','miley','justin1','bieber','harry','zayn','niall','liam','louis',
+        'onepiece','naruto123','sasuke','goku','vegeta','dragonball','pokemon123','pikachu',
+        'charmander','bulbasaur','squirtle','ashketchum','yugioh','digimon','marvel','dccomics',
+        'spiderman','ironman','batman123','superman1','hulk','thor','loki','captain','flash',
+        'joker','harleyquinn','deadpool','wolverine','avengers','justiceleague','starwars1',
+        'jedi','sith','vader','yoda','skywalker','obiwan','han','leia','chewbacca','r2d2',
+        'c3po','darth','empire','galaxy','universe','planet','earth','moon','sun','mars',
+        'venus','mercury','saturn','uranus','neptune','pluto','cosmos','space','stars',
+        'blackhole','milkyway','bigbang','eclipse','meteor','asteroid','comet','alien',
+        'ufo','area51','extraterrestrial','robot','android','cyborg','ai','machine','hacker',
+        'root','toor','nmap','kali','linux','ubuntu','windows1','macos','iphone','samsung1',
+        'galaxy1','pixel','nokia','sony','xiaomi','huawei','oppo','vivo','realme','lenovo',
+        'dell','hp','asus','acer','msi','thinkpad','alienware','razor','logitech','corsair'
+])
 
-    def run(self):
-        try:
-            self.progress.emit(5)
-            # simple pipeline
-            pipeline = Pipeline([
-                ('scaler', StandardScaler()),
-                ('rf', RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1))
-            ])
-            self.progress.emit(20)
-            pipeline.fit(self.X, self.y)
-            self.progress.emit(90)
-            self.finished.emit(pipeline)
-            self.progress.emit(100)
-        except Exception:
-            tb = traceback.format_exc()
-            self.error.emit(tb)
+def entropy_estimate(pw: str) -> float:
+    # Shannon entropy estimate on characters
+    if not pw:
+        return 0.0
+    from collections import Counter
+    counts = Counter(pw)
+    probs = [v/len(pw) for v in counts.values()]
+    H = -sum(p*math.log2(p) for p in probs)
+    return H
 
+def char_class_counts(pw: str):
+    lower = sum(1 for c in pw if c.islower())
+    upper = sum(1 for c in pw if c.isupper())
+    digits = sum(1 for c in pw if c.isdigit())
+    special = sum(1 for c in pw if not c.isalnum())
+    return lower, upper, digits, special
 
+def has_common_pattern(pw: str):
+    s = pw.lower()
+    if s in COMMON_PASSWORDS:
+        return 1
+    # sequences like 1234, abcd
+    seqs = ['1234','abcd','qwerty','4321','pass']
+    return int(any(ss in s for ss in seqs))
+
+def extract_features(pw: str) -> dict:
+    lower, upper, digits, special = char_class_counts(pw)
+    entropy = entropy_estimate(pw)
+    length = len(pw)
+    pattern = has_common_pattern(pw)
+    diversity = sum(1 for v in [lower>0, upper>0, digits>0, special>0] if v)
+    features = {
+        'length': length,
+        'entropy': entropy,
+        'lower': lower,
+        'upper': upper,
+        'digits': digits,
+        'special': special,
+        'pattern_common': pattern,
+        'diversity': diversity
+    }
+    return features
+
+# Worker threads
 class PredictorThread(QThread):
-    finished = pyqtSignal(object)
+    finished = pyqtSignal(float, dict)
     error = pyqtSignal(str)
 
-    def __init__(self, pipeline, X):
+    def __init__(self, model, features):
         super().__init__()
-        self.pipeline = pipeline
-        self.X = X
+        self.model = model
+        self.features = features
 
     def run(self):
         try:
-            preds = self.pipeline.predict(self.X)
-            self.finished.emit(preds)
-        except Exception:
+            X = [self.features]
+            dv = self.model['dv']
+            Xv = dv.transform(X)
+            score = float(self.model['clf'].predict(Xv)[0])
+            self.finished.emit(score, self.features)
+        except Exception as e:
             tb = traceback.format_exc()
             self.error.emit(tb)
 
-# Feature engineering
-def prepare_features(df: pd.DataFrame) -> (np.ndarray, pd.DataFrame):
-    df2 = df.copy()
-    # Ensure necessary columns
-    df2['cvss'] = pd.to_numeric(df2.get('cvss', 0), errors='coerce').fillna(0)
-    # exploit_available: 1/0
-    df2['exploit_available'] = df2.get('exploit_available', 0).apply(lambda x: 1 if str(x).strip() in ['1','True','true','yes','y'] else 0) if 'exploit_available' in df2.columns else 0
-    # patch_available
-    df2['patch_available'] = df2.get('patch_available', 0).apply(lambda x: 1 if str(x).strip() in ['1','True','true','yes','y'] else 0) if 'patch_available' in df2.columns else 0
-    # assets_affected
-    df2['assets_affected'] = pd.to_numeric(df2.get('assets_affected', 1), errors='coerce').fillna(1)
-    # asset_criticality
-    df2['asset_criticality'] = pd.to_numeric(df2.get('asset_criticality', 3), errors='coerce').fillna(3)
-    # days since published
-    def days_since(publ):
-        try:
-            d = pd.to_datetime(publ)
-            return (pd.Timestamp.now() - d).days
-        except Exception:
-            return 365
-    df2['days_since_published'] = df2.get('published_date', None).apply(days_since) if 'published_date' in df2.columns else 365
-    # derived
-    df2['exposure_score'] = (df2['assets_affected'] * df2['asset_criticality'])
-    df2['time_decay'] = 1 / (1 + np.log1p(df2['days_since_published']))
-    # features list
-    features = ['cvss','exploit_available','patch_available','assets_affected','asset_criticality','exposure_score','time_decay']
-    X = df2[features].fillna(0).values.astype(float)
-    return X, df2
+# Simple trainer
+def build_model():
+    # creates a small synthetic dataset mapping features to 0-100 score
+    rows = []
+    def score_from_features(f):
+        s = f['entropy'] * 10 + f['diversity']*5 + (f['length']*2)
+        s -= f['pattern_common']*30
+        s = max(0, min(100, s))
+        return s
 
-# Synthetic training label generator
-def synthesize_priority_labels(df: pd.DataFrame) -> np.ndarray:
-    # rule-based synthetic label: combine CVSS, exploit, asset criticality, patch availability, and exposure
-    cvss = df['cvss'].values
-    exploit = df['exploit_available'].values
-    patch = df['patch_available'].values
-    exposure = df['exposure_score'].values
-    time_decay = df['time_decay'].values
-    # base score from cvss (scaled 0-1)
-    base = cvss / 10.0
-    score = base * (0.5 + 0.5*exploit)  # exploit doubles weight
-    score += 0.15 * (exposure / (1 + exposure))
-    score += 0.1 * (1 - patch)  # no patch increases priority
-    score *= (1 + 0.2 * time_decay)
-    # map to 0-100
-    score = np.clip(score, 0, 2)  # keep reasonable
-    return (score / 2.0 * 100.0)
+    samples = set([
+        'password', '123456', 'qwerty', 'letmein', 'admin', 'welcome', 'iloveyou', '000000',
+        '123456789', '12345678', '12345', '123123', '111111', '1234', 'abc123', '1234567', 'dragon',
+        'monkey', 'football', 'baseball', 'shadow', 'master', 'superman', '696969', 'jordan', 'harley',
+        'computer', 'hunter', 'buster', 'soccer', 'batman', 'thomas', 'jessica', 'michael', 'charlie',
+        'pepper', 'secret', 'andrew', 'tigger', 'sunshine', 'iloveu', 'princess', 'flower', 'hottie',
+        'loveme', 'zaq12wsx', 'starwars', 'hello', 'freedom', 'whatever', 'qazwsx', 'trustno1',
+        'password1', 'qwerty123', 'letmein1', 'welcome1', '123qwe', '654321', 'donald', 'pokemon',
+        'naruto', 'superstar', 'killer', 'mustang', 'jordan23', 'summer', 'love', 'angel', 'cheese',
+        'daniel', 'family', 'william', 'george', 'maggie', 'cookie', 'ginger', 'amanda', 'justin',
+        'music', 'happy', 'peppermint', 'blink182', 'matrix', 'carlos', 'samsung', 'google', 'ninja',
+        '123abc', 'asdfgh', 'zxcvbn', 'qwertyuiop', '1q2w3e4r', 'q1w2e3r4', 'admin123', 'welcome123',
+        'iloveyou2', 'princess1', 'love123', 'football1', 'baseball1', 'soccer1', 'basketball',
+        'hockey', 'tennis', 'guitar', 'bandit', 'ranger', 'cowboy', 'indigo', 'orange', 'yellow',
+        'purple', 'green', 'blue', 'black', 'white', 'red', 'silver', 'gold', 'diamond', 'crystal',
+        'mercedes', 'corvette', 'porsche', 'ferrari', 'honda', 'toyota', 'chevy', 'ford', 'bmw',
+        'windows', 'mypass', 'pass123', 'passw0rd', 'pa55word', 'letmein123', '123456a', 'abc12345',
+        '1qaz2wsx', 'qwerty1', 'asdf1234', 'ilovegod', 'jesus', 'god123', 'heaven', 'faith', 'church',
+        'america', 'canada', 'mexico', 'brazil', 'england', 'france', 'germany', 'italy', 'spain',
+        'japan', 'china', 'india', 'serbia', 'russia', 'ukraine', 'poland', 'turkey', 'sweden',
+        'denmark', 'norway', 'finland', 'ireland', 'scotland', 'wales', 'australia', 'newzealand',
+        'thailand', 'vietnam', 'philippines', 'indonesia', 'malaysia', 'singapore', 'korea', 'egypt',
+        'africa', 'nigeria', 'kenya', 'southafrica', 'morocco', 'algeria', 'tunisia', 'worldcup',
+        'arsenal', 'chelsea', 'liverpool', 'manutd', 'realmadrid', 'barcelona', 'juventus', 'milan',
+        'bayern', 'psg', 'olympics', 'champion', 'winner', 'loser', 'gameover', 'playstation',
+        'nintendo', 'xbox', 'minecraft', 'fortnite', 'roblox', 'amongus', 'steam', 'counterstrike',
+        'halflife', 'portal', 'doom', 'quake', 'diablo', 'warcraft', 'starcraft', 'overwatch',
+        'apple', 'banana', 'orange1', 'lemon', 'grape', 'mango', 'kiwi', 'watermelon', 'strawberry',
+        'chocolate', 'candy', 'icecream', 'coffee', 'pizza', 'burger', 'taco', 'sushi', 'ramen',
+        'donut', 'cookie1', 'cake123', 'cupcake', 'beer', 'vodka', 'whiskey', 'tequila', 'rum',
+        'marijuana', 'cocaine', 'heroin', 'weed420', 'stoner', 'drugs', 'smoking', 'alcohol', 'party',
+        'dance', 'music123', 'rapstar', 'eminem', 'drdre', 'snoopdogg', '2pac', 'biggie', 'metallica',
+        'nirvana', 'queen', 'beatles', 'elvis', 'madonna', 'beyonce', 'rihanna', 'shakira', 'ladygaga',
+        'taylor', 'selena', 'miley', 'justin1', 'bieber', 'harry', 'zayn', 'niall', 'liam', 'louis',
+        'onepiece', 'naruto123', 'sasuke', 'goku', 'vegeta', 'dragonball', 'pokemon123', 'pikachu',
+        'charmander', 'bulbasaur', 'squirtle', 'ashketchum', 'yugioh', 'digimon', 'marvel', 'dccomics',
+        'spiderman', 'ironman', 'batman123', 'superman1', 'hulk', 'thor', 'loki', 'captain', 'flash',
+        'joker', 'harleyquinn', 'deadpool', 'wolverine', 'avengers', 'justiceleague', 'starwars1',
+        'jedi', 'sith', 'vader', 'yoda', 'skywalker', 'obiwan', 'han', 'leia', 'chewbacca', 'r2d2',
+        'c3po', 'darth', 'empire', 'galaxy', 'universe', 'planet', 'earth', 'moon', 'sun', 'mars',
+        'venus', 'mercury', 'saturn', 'uranus', 'neptune', 'pluto', 'cosmos', 'space', 'stars',
+        'blackhole', 'milkyway', 'bigbang', 'eclipse', 'meteor', 'asteroid', 'comet', 'alien',
+        'ufo', 'area51', 'extraterrestrial', 'robot', 'android', 'cyborg', 'ai', 'machine', 'hacker',
+        'root', 'toor', 'nmap', 'kali', 'linux', 'ubuntu', 'windows1', 'macos', 'iphone', 'samsung1',
+        'galaxy1', 'pixel', 'nokia', 'sony', 'xiaomi', 'huawei', 'oppo', 'vivo', 'realme', 'lenovo',
+        'dell', 'hp', 'asus', 'acer', 'msi', 'thinkpad', 'alienware', 'razor', 'logitech', 'corsair'
+    ])
+    for s in samples:
+        f = extract_features(s)
+        rows.append((f, score_from_features(f)))
+    # build model
+    df = pd.DataFrame([{**r[0], 'score': r[1]} for r in rows])
+    X = df.drop(columns=['score']).to_dict(orient='records')
+    y = df['score'].values
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.feature_extraction import DictVectorizer
+    dv = DictVectorizer(sparse=False)
+    Xv = dv.fit_transform(X)
+    clf = RandomForestRegressor(n_estimators=200, random_state=42)
+    clf.fit(Xv, y)
+    return {'dv': dv, 'clf': clf}
 
-# GUI
+# MainWindow
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('VulnPrioritizer - AI Vulnerability Prioritization')
-        self.setWindowIcon(QIcon("AI4.ico"))
-        self.resize(1200, 760)
-        self.pipeline = None
-        self.df = None
+        self.setWindowTitle('PasswordStrengthML - Real-time Predictor')
+        self.setWindowIcon(QIcon("AI5.ico"))
+        self.resize(900,500)
+        self.model = build_model()
+        self._predictor = None
 
         central = QWidget(); self.setCentralWidget(central)
-        main = QHBoxLayout(); central.setLayout(main)
+        layout = QVBoxLayout(); central.setLayout(layout)
 
-        # Left panel: controls
-        left = QVBoxLayout(); main.addLayout(left, 1)
+        title = QLabel('Password Strength - ML Predictor')
+        title.setStyleSheet('font-weight:700; font-size:18px; color:#dbeafe;')
+        layout.addWidget(title)
 
-        btn_load = QPushButton('Load Vulnerabilities CSV')
-        btn_load.clicked.connect(self.load_csv)
-        btn_generate = QPushButton('Generate Example Dataset')
-        btn_generate.clicked.connect(self.generate_example)
-        btn_train = QPushButton('Train Prioritization Model')
-        btn_train.clicked.connect(self.train_model)
-        btn_predict = QPushButton('Run Prioritization')
-        btn_predict.clicked.connect(self.run_prioritization)
-        btn_export = QPushButton('Export Results (CSV)')
-        btn_export.clicked.connect(self.export_results)
-        btn_save = QPushButton('Save Model (.joblib)')
-        btn_save.clicked.connect(self.save_model)
-        btn_load_model = QPushButton('Load Model (.joblib)')
-        btn_load_model.clicked.connect(self.load_model)
+        instr = QLabel('Type a password below. The app predicts a strength score (0-100) in real-time. Avoid testing real passwords.')
+        layout.addWidget(instr)
 
-        left.addWidget(btn_load)
-        left.addWidget(btn_generate)
-        left.addWidget(btn_train)
-        left.addWidget(btn_predict)
-        left.addWidget(btn_export)
-        left.addWidget(btn_save)
-        left.addWidget(btn_load_model)
+        self.input_pw = QLineEdit(); self.input_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_pw.setPlaceholderText('Type password here...')
+        layout.addWidget(self.input_pw)
 
-        # Model config
-        grp = QGroupBox('Model Config (quick)')
-        form = QFormLayout()
-        self.spin_estimators = QSpinBox(); self.spin_estimators.setRange(10,1000); self.spin_estimators.setValue(200)
-        self.spin_test_size = QDoubleSpinBox(); self.spin_test_size.setRange(0.05,0.5); self.spin_test_size.setSingleStep(0.05); self.spin_test_size.setValue(0.2)
-        form.addRow('n_estimators', self.spin_estimators)
-        form.addRow('test_size', self.spin_test_size)
-        grp.setLayout(form)
-        left.addWidget(grp)
+        self.show_pw_cb = QCheckBox('Show password'); self.show_pw_cb.stateChanged.connect(self.on_toggle_show)
+        layout.addWidget(self.show_pw_cb)
 
-        # Progress and log
-        self.progress = QProgressBar(); self.progress.setValue(0)
-        left.addWidget(self.progress)
-        self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setFixedHeight(160)
-        left.addWidget(self.log)
+        # results
+        self.score_bar = QProgressBar(); self.score_bar.setRange(0,100); self.score_bar.setValue(0)
+        layout.addWidget(self.score_bar)
+        self.score_label = QLabel('Strength: N/A')
+        layout.addWidget(self.score_label)
 
-        # Right: table and visualization
-        right = QVBoxLayout(); main.addLayout(right, 3)
+        # tokenized features display
+        self.features_box = QTextEdit(); self.features_box.setReadOnly(True); self.features_box.setFixedHeight(140)
+        layout.addWidget(QLabel('Extracted features:'))
+        layout.addWidget(self.features_box)
 
-        self.table = QTableWidget();
-        self.table.setColumnCount(9)
-        self.table.setHorizontalHeaderLabels(['cve_id','cvss','published_date','exploit_available','patch_available','assets_affected','asset_criticality','priority','description'])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.itemChanged.connect(self.on_table_item_changed)
-        right.addWidget(self.table)
-
-        self.fig = Figure(figsize=(6,2.5))
-        self.canvas = FigureCanvas(self.fig)
-        right.addWidget(self.canvas)
-
-        # Bottom quick filter
-        bottom = QHBoxLayout(); right.addLayout(bottom)
-        bottom.addWidget(QLabel('Show top N priorities:'))
-        self.top_n = QSpinBox(); self.top_n.setRange(1,1000); self.top_n.setValue(10)
-        bottom.addWidget(self.top_n)
-        btn_filter = QPushButton('Filter Top N'); btn_filter.clicked.connect(self.filter_top_n)
-        bottom.addWidget(btn_filter)
-        btn_reset = QPushButton('Reset View'); btn_reset.clicked.connect(self.reset_view)
-        bottom.addWidget(btn_reset)
+        # buttons
+        btn_layout = QHBoxLayout()
+        self.btn_save = QPushButton('Save Model'); self.btn_save.clicked.connect(self.on_save_model)
+        self.btn_load = QPushButton('Load Model'); self.btn_load.clicked.connect(self.on_load_model)
+        btn_layout.addWidget(self.btn_save); btn_layout.addWidget(self.btn_load)
+        layout.addLayout(btn_layout)
 
         self.setStyleSheet(QSS)
 
-    # Helpers
-    def log_msg(self, s):
-        ts = datetime.now().strftime('%H:%M:%S')
-        self.log.append(f'[{ts}] {s}')
+        # debounce timer
+        self._debounce = QTimer(); self._debounce.setSingleShot(True); self._debounce.timeout.connect(self.on_predict_debounced)
+        self.input_pw.textChanged.connect(self._on_pw_change)
 
-    def load_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Open vulnerabilities CSV', os.getcwd(), 'CSV Files (*.csv)')
-        if not path:
-            return
+        # initial help text
+        self.features_box.setPlainText('Hints: longer passwords, mixed character classes and high entropy increase strength. Avoid common passwords like "password" or "123456".')
+
+    def on_toggle_show(self):
+        if self.show_pw_cb.isChecked():
+            self.input_pw.setEchoMode(QLineEdit.EchoMode.Normal)
+        else:
+            self.input_pw.setEchoMode(QLineEdit.EchoMode.Password)
+
+    def _on_pw_change(self):
+        self._debounce.start(250)
+
+    def on_predict_debounced(self):
+        pw = self.input_pw.text()
+        features = extract_features(pw)
+        # update features box
+        lines = [f"{k}: {v}" for k,v in features.items()]
+        self.features_box.setPlainText('\n'.join(lines))
+        # threaded prediction
+        self._predictor = PredictorThread(self.model, features)
+        self._predictor.finished.connect(self._on_predicted)
+        self._predictor.error.connect(self._on_error)
+        self._predictor.start()
+
+    def _on_predicted(self, score, features):
         try:
-            df = pd.read_csv(path)
-            self.df = df
-            self.log_msg(f'Loaded CSV: {path} ({len(df)} rows)')
-            self.populate_table()
+            val = int(round(score))
+            self.score_bar.setValue(val)
+            self.score_label.setText(f'Strength: {val}/100')
         except Exception as e:
-            QMessageBox.critical(self, 'Load error', str(e))
-            self.log_msg('Load CSV error: ' + str(e))
+            print('Prediction handling error', e)
 
-    def generate_example(self):
-        rows = []
-        for i in range(120):
-            cvss = round(np.clip(np.random.normal(7,1.5), 0, 10),1)
-            exploit = 1 if np.random.rand() < 0.25 else 0
-            patch = 1 if np.random.rand() < 0.6 else 0
-            assets = np.random.randint(1,50)
-            criticality = np.random.randint(1,6)
-            pub = (pd.Timestamp.now() - pd.Timedelta(days=np.random.randint(1,1000))).strftime('%Y-%m-%d')
-            rows.append({'cve_id': f'CVE-2025-{1000+i}','cvss':cvss,'published_date':pub,'exploit_available':exploit,'patch_available':patch,'assets_affected':assets,'asset_criticality':criticality,'description':'Example vuln'})
-        self.df = pd.DataFrame(rows)
-        self.log_msg('Generated synthetic example dataset')
-        self.populate_table()
+    def _on_error(self, tb):
+        QMessageBox.critical(self, 'Prediction error', 'A background prediction failed - see console')
+        print(tb)
 
-    def populate_table(self):
-        if self.df is None:
-            return
-        self.table.blockSignals(True)
-        display = self.df.copy()
-        # ensure priority column exists
-        if 'priority' not in display.columns:
-            display['priority'] = 0.0
-        self.table.setRowCount(len(display))
-        for r, (_, row) in enumerate(display.iterrows()):
-            self.table.setItem(r, 0, QTableWidgetItem(str(row.get('cve_id',''))))
-            self.table.setItem(r, 1, QTableWidgetItem(str(row.get('cvss',''))))
-            self.table.setItem(r, 2, QTableWidgetItem(str(row.get('published_date',''))))
-            self.table.setItem(r, 3, QTableWidgetItem(str(row.get('exploit_available',''))))
-            self.table.setItem(r, 4, QTableWidgetItem(str(row.get('patch_available',''))))
-            self.table.setItem(r, 5, QTableWidgetItem(str(row.get('assets_affected',''))))
-            self.table.setItem(r, 6, QTableWidgetItem(str(row.get('asset_criticality',''))))
-            self.table.setItem(r, 7, QTableWidgetItem(str(round(float(row.get('priority',0)),2))))
-            self.table.setItem(r, 8, QTableWidgetItem(str(row.get('description',''))))
-        self.table.blockSignals(False)
-        self.plot_priorities()
-        self.log_msg('Table populated')
-
-    def train_model(self):
-        if self.df is None:
-            QMessageBox.warning(self, 'No data', 'Load or generate a dataset first')
-            return
-        try:
-            X, df2 = prepare_features(self.df)
-            y = synthesize_priority_labels(df2)
-            # threaded training
-            self.trainer = TrainerThread(X, y)
-            self.trainer.progress.connect(self.progress.setValue)
-            self.trainer.finished.connect(self.on_trained)
-            self.trainer.error.connect(self.on_worker_error)
-            self.trainer.start()
-            self.log_msg('Training started in background...')
-        except Exception as e:
-            QMessageBox.critical(self, 'Train error', str(e))
-            self.log_msg('Train error: ' + str(e))
-
-    def on_trained(self, pipeline):
-        self.pipeline = pipeline
-        self.progress.setValue(0)
-        self.log_msg('Training finished - model ready')
-
-    def run_prioritization(self):
-        if self.df is None:
-            QMessageBox.warning(self, 'No data', 'Load or generate dataset first')
-            return
-        if self.pipeline is None:
-            QMessageBox.warning(self, 'No model', 'Train or load a model first')
-            return
-        try:
-            X, df2 = prepare_features(self.df)
-            self.predictor = PredictorThread(self.pipeline, X)
-            self.predictor.finished.connect(lambda preds: self.on_predicted(preds, df2))
-            self.predictor.error.connect(self.on_worker_error)
-            self.predictor.start()
-            self.log_msg('Running prioritization...')
-        except Exception as e:
-            QMessageBox.critical(self, 'Predict error', str(e))
-            self.log_msg('Predict error: ' + str(e))
-
-    def on_predicted(self, preds, df2):
-        try:
-            df2['priority'] = np.clip(preds, 0, 100)
-            self.df = df2
-            self.populate_table()
-            self.log_msg('Prioritization finished')
-        except Exception as e:
-            self.log_msg('Post-predict error: ' + str(e))
-
-    def save_model(self):
-        if self.pipeline is None:
-            QMessageBox.warning(self, 'No model', 'Train a model first')
-            return
+    def on_save_model(self):
         path, _ = QFileDialog.getSaveFileName(self, 'Save model', os.getcwd(), 'Joblib Files (*.joblib)')
         if not path:
             return
-        joblib.dump(self.pipeline, path)
-        self.log_msg(f'Model saved to {path}')
+        joblib.dump(self.model, path)
+        QMessageBox.information(self, 'Saved', f'Model saved to {path}')
 
-    def load_model(self):
+    def on_load_model(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Load model', os.getcwd(), 'Joblib Files (*.joblib)')
         if not path:
             return
         try:
-            self.pipeline = joblib.load(path)
-            self.log_msg(f'Model loaded from {path}')
+            obj = joblib.load(path)
+            self.model = obj
+            QMessageBox.information(self, 'Loaded', f'Model loaded from {path}')
         except Exception as e:
-            QMessageBox.critical(self, 'Load model error', str(e))
-            self.log_msg('Load model error: ' + str(e))
+            QMessageBox.critical(self, 'Load error', str(e))
 
-    def export_results(self):
-        if self.df is None or 'priority' not in self.df.columns:
-            QMessageBox.warning(self, 'No results', 'Run prioritization first')
-            return
-        path, _ = QFileDialog.getSaveFileName(self, 'Export results', os.getcwd(), 'CSV Files (*.csv)')
-        if not path:
-            return
-        try:
-            self.df.to_csv(path, index=False)
-            self.log_msg(f'Results exported to {path}')
-            QMessageBox.information(self, 'Exported', f'Results exported to {path}')
-        except Exception as e:
-            QMessageBox.critical(self, 'Export error', str(e))
-            self.log_msg('Export failed: ' + str(e))
-
-    def filter_top_n(self):
-        if self.df is None or 'priority' not in self.df.columns:
-            QMessageBox.warning(self, 'No data', 'Run prioritization first')
-            return
-        n = int(self.top_n.value())
-        df_sorted = self.df.sort_values('priority', ascending=False).head(n)
-        self.table.blockSignals(True)
-        self.table.setRowCount(len(df_sorted))
-        for r, (_, row) in enumerate(df_sorted.iterrows()):
-            self.table.setItem(r, 0, QTableWidgetItem(str(row.get('cve_id',''))))
-            self.table.setItem(r, 1, QTableWidgetItem(str(row.get('cvss',''))))
-            self.table.setItem(r, 2, QTableWidgetItem(str(row.get('published_date',''))))
-            self.table.setItem(r, 3, QTableWidgetItem(str(row.get('exploit_available',''))))
-            self.table.setItem(r, 4, QTableWidgetItem(str(row.get('patch_available',''))))
-            self.table.setItem(r, 5, QTableWidgetItem(str(row.get('assets_affected',''))))
-            self.table.setItem(r, 6, QTableWidgetItem(str(row.get('asset_criticality',''))))
-            self.table.setItem(r, 7, QTableWidgetItem(str(round(float(row.get('priority',0)),2))))
-            self.table.setItem(r, 8, QTableWidgetItem(str(row.get('description',''))))
-        self.table.blockSignals(False)
-        self.plot_priorities()
-        self.log_msg(f'Showing top {n} vulnerabilities')
-
-    def reset_view(self):
-        self.populate_table()
-
-    def plot_priorities(self):
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        if self.df is None or 'priority' not in self.df.columns:
-            ax.text(0.5,0.5,'No data', ha='center', va='center')
-        else:
-            pr = self.df['priority'].fillna(0).values
-            ax.hist(pr, bins=20)
-            ax.set_title('Priority distribution')
-            ax.set_xlabel('Priority score')
-        self.canvas.draw()
-
-    # Table edits -> real-time recalculation
-    def on_table_item_changed(self, item: QTableWidgetItem):
-        try:
-            row = item.row()
-            col = item.column()
-            # if user edited asset_criticality, exploit flag, assets_affected or cvss, update df and rerun prediction for that row
-            key_map = {1: 'cvss', 3: 'exploit_available', 4: 'patch_available', 5: 'assets_affected', 6: 'asset_criticality', 7: 'priority'}
-            if col in key_map and self.df is not None:
-                # update df
-                val = item.text()
-                colname = key_map[col]
-                # coerce
-                if colname in ['cvss']:
-                    self.df.at[row, colname] = float(val)
-                elif colname in ['exploit_available','patch_available']:
-                    self.df.at[row, colname] = 1 if val.strip().lower() in ['1','true','yes','y'] else 0
-                else:
-                    self.df.at[row, colname] = pd.to_numeric(val, errors='coerce')
-                # recalc single prediction if pipeline exists
-                if self.pipeline is not None:
-                    X, df2 = prepare_features(self.df)
-                    single_X = X[[row], :]
-                    try:
-                        pred = float(self.pipeline.predict(single_X)[0])
-                        self.df.at[row, 'priority'] = np.clip(pred, 0, 100)
-                        # update table silently
-                        self.table.blockSignals(True)
-                        self.table.setItem(row, 7, QTableWidgetItem(str(round(float(self.df.at[row,'priority']),2))))
-                        self.table.blockSignals(False)
-                        self.plot_priorities()
-                        self.log_msg(f'Recomputed priority for row {row}')
-                    except Exception as e:
-                        self.log_msg('Recompute error: ' + str(e))
-        except Exception as e:
-            self.log_msg('Table change handler error: ' + str(e))
-
-    def on_worker_error(self, tb):
-        QMessageBox.critical(self, 'Worker error', 'A background thread failed - see log')
-        self.log_msg('Worker error:\n' + str(tb))
-
-# Main entry
+# main
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    win = MainWindow()
-    win.show()
+    w = MainWindow()
+    w.show()
     sys.exit(app.exec())
