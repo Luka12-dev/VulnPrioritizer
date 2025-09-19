@@ -63,6 +63,7 @@ class TrainerThread(QThread):
             tb = traceback.format_exc()
             self.error.emit(tb)
 
+
 class PredictorThread(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
